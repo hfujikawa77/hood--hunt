@@ -95,14 +95,16 @@ function newGame() {
     }
   }
   jars.sort((a,b)=>a.order-b.order);
-  jars.forEach((j,i)=>{ j.gx = i % 4; j.gy = Math.floor(i / 4); });
+  jars.forEach((j,i)=>{ j.gx = i % 4; j.idx = i; j.inGrid = true; j.ry = Math.floor(i / 4); });
   slots = Array(SLOT_N).fill(null);
   ants = []; particles = [];
   speed = 1; state = "play"; t = 0;
 }
 
 const slotRect = i => ({ x: 60 + i*96 + 8, y: 610, w: 80, h: 80 });
-const jarRect = j => ({ x: 120 + j.gx*92, y: 730 + j.gy*86, w: 76, h: 76 });
+// row of a grid jar = number of jars still in the same column above it (columns pack upward)
+const rowOf = j => jars.reduce((n,k)=> n + (k.inGrid && k.gx===j.gx && k.idx<j.idx ? 1 : 0), 0);
+const jarRect = j => ({ x: 120 + j.gx*92, y: 730 + j.ry*86, w: 76, h: 76 });
 
 // ---------- logic ----------
 function exposed(x, y) {
@@ -120,14 +122,15 @@ function findTarget(col) {
 
 function placeJar(j) {
   const s = slots.indexOf(null);
-  if (s < 0 || j.slot >= 0 || j.left <= 0 || j.gx < 0) return;
-  slots[s] = j; j.slot = s; j.gx = -1;
+  if (s < 0 || j.slot >= 0 || j.left <= 0 || !j.inGrid) return;
+  slots[s] = j; j.slot = s; j.inGrid = false;
 }
 
 function update(dt) {
   t += dt;
   for (const p of particles) { p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=600*dt; p.life-=dt; }
   particles = particles.filter(p=>p.life>0);
+  for (const j of jars) if (j.inGrid) j.ry += (rowOf(j) - j.ry) * Math.min(1, dt*12);
   if (state !== "play") return;
 
   // spawn ants
@@ -137,18 +140,21 @@ function update(dt) {
     if (!tg) continue;
     grid[tg.y][tg.x] = null; // reserve = already taken off the picture
     j.cool = 0.12; j.ants++;
-    ants.push({ j, col:j.col, x:HOLE.x, y:HOLE.y, tx:PX+tg.x*CELL+CELL/2, ty:PY+tg.y*CELL+CELL/2,
-                phase:"out", ph:Math.random()*6 });
+    const sr = slotRect(j.slot);
+    ants.push({ j, col:j.col, x:sr.x+sr.w/2, y:sr.y+10, tx:PX+tg.x*CELL+CELL/2, ty:PY+tg.y*CELL+CELL/2,
+                phase:"toHole", ph:Math.random()*6 });
     spawnBits(tg.x, tg.y, j.col);
   }
   // move ants
   const v = 320 * dt;
   for (const a of ants) {
-    const dx = (a.phase==="out"?a.tx:HOLE.x) - a.x, dy = (a.phase==="out"?a.ty:HOLE.y) - a.y;
+    const toTarget = a.phase==="out";
+    const dx = (toTarget?a.tx:HOLE.x) - a.x, dy = (toTarget?a.ty:HOLE.y) - a.y;
     const d = Math.hypot(dx,dy);
     a.ph += dt*18; a.ang = Math.atan2(dy,dx);
     if (d <= v) {
-      if (a.phase === "out") a.phase = "back";
+      if (a.phase === "toHole") a.phase = "out";
+      else if (a.phase === "out") a.phase = "back";
       else { a.done = true; a.j.left--; a.j.ants--; }
     } else { a.x += dx/d*v; a.y += dy/d*v; }
   }
@@ -213,7 +219,7 @@ function draw() {
     ctx.fillStyle="#fff"; ctx.globalAlpha=.9; rr(r.x,r.y+30,r.w,r.h-30,12); ctx.fill(); ctx.globalAlpha=1;
     if (slots[i]) jar(r.x+4,r.y+4,r.w-8,r.h-8,slots[i].col,slots[i].left,true); }
   // jar grid
-  for (const j of jars) if (j.gx>=0) { const r = jarRect(j);
+  for (const j of jars) if (j.inGrid) { const r = jarRect(j);
     ctx.fillStyle="rgba(255,255,255,.9)"; rr(r.x-4,r.y-4,r.w+8,r.h+8,18); ctx.fill();
     jar(r.x,r.y,r.w,r.h,j.col,j.total,false); }
   // speed button
@@ -237,7 +243,7 @@ cv.addEventListener("pointerdown", e => {
   const p = pos(e);
   if (state !== "play") { if (p.y>H/2+10 && p.y<H/2+100) newGame(); return; }
   if (hit(p,{x:W-110,y:56,w:90,h:36})) { speed = speed===1?2:1; return; }
-  for (const j of jars) if (j.gx>=0 && hit(p,jarRect(j))) { placeJar(j); break; }
+  for (const j of jars) if (j.inGrid && hit(p,jarRect(j))) { placeJar(j); break; }
 });
 
 // ---------- loop ----------
