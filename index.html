@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Food Hunt</title>
+<style>
+  html,body{margin:0;height:100%;background:#f5c8a8;overflow:hidden;touch-action:manipulation}
+  canvas{display:block;margin:0 auto;height:100%;max-width:100%}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+const W = 600, H = 1200;
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+cv.width = W; cv.height = H;
+
+// ---------- palette ----------
+const PAL = {
+  bg:"#ffd9a0", white:"#ffffff", black:"#2b2330", orange:"#ff9a2e", pink:"#ff7f9a",
+  lpink:"#ffc6e8", green:"#3ddc6a", teal:"#1b6f7a", blue:"#1f7bf0", purple:"#9b7bf5",
+  brown:"#b95b45", yellow:"#ffd93b", sky:"#4cc9f0"
+};
+const JAR_COL = { // jar face colors (slightly deeper than pixel colors)
+  bg:"#ffd9a0", white:"#f3f3fb", black:"#2b2330", orange:"#ff8a1f", pink:"#ff7f9a",
+  lpink:"#ffc6f2", green:"#3ddc6a", teal:"#1b6f7a", blue:"#1f7bf0", purple:"#9b7bf5",
+  brown:"#c0604a", yellow:"#ffd93b", sky:"#4cc9f0"
+};
+
+// ---------- picture ----------
+const GW = 40, GH = 30, CELL = 12, PX = 60, PY = 90;
+const HOLE = { x: PX + GW*CELL/2, y: PY + GH*CELL + 90 };
+
+function buildPicture() {
+  const g = Array.from({length:GH}, () => Array(GW).fill("bg"));
+  const set = (x,y,c) => { if (x>=0&&x<GW&&y>=0&&y<GH) g[y][x]=c; };
+  const rect = (x0,y0,x1,y1,c) => { for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++) set(x,y,c); };
+  const ell = (cx,cy,rx,ry,c) => { for(let y=0;y<GH;y++) for(let x=0;x<GW;x++){
+    const dx=(x-cx)/rx, dy=(y-cy)/ry; if(dx*dx+dy*dy<=1) set(x,y,c);} };
+
+  // floor
+  rect(0,24,GW-1,25,"purple"); rect(0,26,GW-1,GH-1,"lpink");
+  // plant
+  rect(5,6,5,18,"teal");
+  [[5,6,3,2],[3,10,3,2],[8,10,3,2],[3,14,3,2],[8,14,3,2],[5,8,4,2]].forEach(([x,y,rx,ry])=>{
+    ell(x,y,rx,ry,"teal"); ell(x,y-1,rx-1,1,"green"); });
+  rect(2,18,9,19,"pink"); rect(2,20,9,25,"brown");
+  // picture frame
+  rect(28,0,38,8,"brown"); rect(29,1,37,7,"sky"); rect(29,4,37,7,"blue");
+  ell(33,4,2,2,"pink"); set(33,4,"yellow");
+  // heart card
+  rect(17,1,24,6,"white");
+  [19,20,22,23].forEach(x=>set(x,2,"pink")); rect(19,3,23,3,"pink");
+  rect(20,4,22,4,"pink"); set(21,5,"pink"); set(21,0,"sky");
+  // flower vase
+  rect(31,17,35,25,"blue"); rect(31,15,35,16,"blue");
+  [[33,14],[34,11]].forEach(([x,y])=>{ ell(x,y,2,1,"white"); set(x,y,"yellow"); });
+  rect(33,12,33,15,"green"); rect(31,13,32,13,"green"); rect(35,13,36,13,"green");
+  // cat
+  ell(21,24,6,5,"white");                      // body
+  rect(15,26,17,28,"white"); rect(25,26,27,28,"white"); // legs
+  ell(28,26,3,2,"orange"); ell(14,24,2,4,"black");       // tail / patch
+  ell(21,15,7,5.5,"white");                    // head
+  for(let y=8;y<=11;y++){ rect(14,y,14+(y-8),y,"orange"); rect(28-(y-8),y,28,y,"black"); }
+  set(15,10,"lpink"); set(27,10,"lpink");
+  rect(14,12,18,14,"black"); rect(24,12,28,14,"orange");
+  rect(17,14,19,14,"yellow"); rect(23,14,25,14,"yellow");
+  set(18,14,"black"); set(24,14,"black");
+  rect(21,16,21,16,"lpink"); set(20,18,"black"); set(22,18,"black");
+  // bandana
+  rect(16,19,26,20,"blue"); rect(17,21,25,21,"blue"); rect(19,22,23,22,"blue");
+  set(21,23,"blue"); set(18,20,"yellow"); set(24,20,"yellow");
+  return g;
+}
+
+// ---------- state ----------
+let grid, jars, ants, slots, speed, state, t, particles;
+const SLOT_N = 5;
+
+function newGame() {
+  grid = buildPicture();
+  const count = {};
+  grid.forEach(r => r.forEach(c => count[c] = (count[c]||0)+1));
+  jars = [];
+  for (const [col, n] of Object.entries(count)) {
+    let left = n;
+    const max = col === "bg" ? 110 : 80;
+    while (left > 0) {
+      const v = left <= max ? left : Math.ceil(left / Math.ceil(left/max));
+      jars.push({ col, total: v, left: v, slot: -1, ants: 0, order: Math.random() });
+      left -= v;
+    }
+  }
+  jars.sort((a,b)=>a.order-b.order);
+  jars.forEach((j,i)=>{ j.gx = i % 4; j.gy = Math.floor(i / 4); });
+  slots = Array(SLOT_N).fill(null);
+  ants = []; particles = [];
+  speed = 1; state = "play"; t = 0;
+}
+
+const slotRect = i => ({ x: 60 + i*96 + 8, y: 610, w: 80, h: 80 });
+const jarRect = j => ({ x: 120 + j.gx*92, y: 730 + j.gy*86, w: 76, h: 76 });
+
+// ---------- logic ----------
+function exposed(x, y) {
+  return x===0||y===0||x===GW-1||y===GH-1||!grid[y][x-1]||!grid[y][x+1]||!grid[y-1][x]||!grid[y+1][x];
+}
+function findTarget(col) {
+  let best = null, bd = 1e9;
+  for (let y=0;y<GH;y++) for (let x=0;x<GW;x++) {
+    if (grid[y][x] !== col || !exposed(x,y)) continue;
+    const d = Math.hypot(PX+x*CELL-HOLE.x, PY+y*CELL-HOLE.y);
+    if (d < bd) { bd = d; best = {x,y}; }
+  }
+  return best;
+}
+
+function placeJar(j) {
+  const s = slots.indexOf(null);
+  if (s < 0 || j.slot >= 0 || j.left <= 0 || j.gx < 0) return;
+  slots[s] = j; j.slot = s; j.gx = -1;
+}
+
+function update(dt) {
+  t += dt;
+  for (const p of particles) { p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=600*dt; p.life-=dt; }
+  particles = particles.filter(p=>p.life>0);
+  if (state !== "play") return;
+
+  // spawn ants
+  for (const j of slots) {
+    if (!j || j.left - j.ants <= 0 || j.ants >= 8 || (j.cool = (j.cool||0) - dt) > 0) continue;
+    const tg = findTarget(j.col);
+    if (!tg) continue;
+    grid[tg.y][tg.x] = null; // reserve = already taken off the picture
+    j.cool = 0.12; j.ants++;
+    ants.push({ j, col:j.col, x:HOLE.x, y:HOLE.y, tx:PX+tg.x*CELL+CELL/2, ty:PY+tg.y*CELL+CELL/2,
+                phase:"out", ph:Math.random()*6 });
+    spawnBits(tg.x, tg.y, j.col);
+  }
+  // move ants
+  const v = 320 * dt;
+  for (const a of ants) {
+    const dx = (a.phase==="out"?a.tx:HOLE.x) - a.x, dy = (a.phase==="out"?a.ty:HOLE.y) - a.y;
+    const d = Math.hypot(dx,dy);
+    a.ph += dt*18; a.ang = Math.atan2(dy,dx);
+    if (d <= v) {
+      if (a.phase === "out") a.phase = "back";
+      else { a.done = true; a.j.left--; a.j.ants--; }
+    } else { a.x += dx/d*v; a.y += dy/d*v; }
+  }
+  ants = ants.filter(a=>!a.done);
+  for (let i=0;i<SLOT_N;i++) if (slots[i] && slots[i].left <= 0) slots[i] = null;
+
+  // win / lose
+  if (jars.every(j=>j.left<=0)) state = "win";
+  else if (!slots.includes(null) && ants.length===0 && slots.every(j=>j && !findTarget(j.col))) state = "lose";
+}
+
+function spawnBits(x,y,col) {
+  for (let i=0;i<3;i++) particles.push({ x:PX+x*CELL+6, y:PY+y*CELL+6, vx:(Math.random()-.5)*120,
+    vy:-100-Math.random()*80, life:.5, col });
+}
+
+// ---------- drawing ----------
+function rr(x,y,w,h,r) { ctx.beginPath(); ctx.roundRect(x,y,w,h,r); }
+function text(s,x,y,size,fill="#fff",stroke="#222") {
+  ctx.font = `900 ${size}px "Arial Black",Arial,sans-serif`; ctx.textAlign="center"; ctx.textBaseline="middle";
+  ctx.lineWidth = size/4; ctx.strokeStyle = stroke; ctx.lineJoin="round";
+  ctx.strokeText(s,x,y); ctx.fillStyle = fill; ctx.fillText(s,x,y);
+}
+function jar(x,y,w,h,col,n,active) {
+  ctx.fillStyle = "rgba(0,0,0,.18)"; rr(x,y+6,w,h,16); ctx.fill();
+  ctx.fillStyle = JAR_COL[col]; rr(x,y,w,h-4,16); ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,.35)"; rr(x+6,y+4,w-12,10,5); ctx.fill();
+  if (active) { ctx.fillStyle="rgba(0,0,0,.25)"; rr(x+w*.25,y-8,w*.5,12,6); ctx.fill(); }
+  text(n, x+w/2, y+h/2, 32);
+}
+function ant(a) {
+  ctx.save(); ctx.translate(a.x,a.y); ctx.rotate(a.ang||0);
+  ctx.strokeStyle = "#222"; ctx.lineWidth = 1.5;
+  for (let i=-1;i<=1;i++) { const s=Math.sin(a.ph+i*2)*3;
+    ctx.beginPath(); ctx.moveTo(i*4,0); ctx.lineTo(i*4+s,-8); ctx.moveTo(i*4,0); ctx.lineTo(i*4-s,8); ctx.stroke(); }
+  ctx.fillStyle = JAR_COL[a.col]==="#ffffff"?"#ddd":JAR_COL[a.col];
+  ctx.strokeStyle="rgba(0,0,0,.5)";
+  ctx.beginPath(); ctx.ellipse(-7,0,6,5,0,0,7); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(1,0,4,3.5,0,0,7); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.arc(8,0,4,0,7); ctx.fill(); ctx.stroke();
+  if (a.phase==="back") { ctx.fillStyle=PAL[a.col]; ctx.fillRect(2,-5,9,9); ctx.strokeRect(2,-5,9,9); }
+  ctx.restore();
+}
+
+function draw() {
+  ctx.fillStyle = "#f5c8a8"; ctx.fillRect(0,0,W,H);
+  text("FOOD HUNT", W/2, 44, 38, "#ffd93b", "#b9561a");
+  // tray
+  ctx.fillStyle = "#e5cdbf"; rr(PX-24,PY-24,GW*CELL+48,GH*CELL+48,22); ctx.fill();
+  ctx.fillStyle = "#d9bfaf"; rr(PX-12,PY-12,GW*CELL+24,GH*CELL+24,14); ctx.fill();
+  for (let y=0;y<GH;y++) for (let x=0;x<GW;x++) { const c = grid[y][x]; if (!c) continue;
+    ctx.fillStyle = PAL[c]; ctx.fillRect(PX+x*CELL, PY+y*CELL, CELL, CELL);
+    ctx.fillStyle = "rgba(255,255,255,.28)"; ctx.fillRect(PX+x*CELL, PY+y*CELL, CELL, 2);
+    ctx.fillStyle = "rgba(0,0,0,.1)"; ctx.fillRect(PX+x*CELL, PY+y*CELL+CELL-1, CELL, 1); }
+  // hole
+  ctx.fillStyle = "#6b5a52"; ctx.beginPath(); ctx.ellipse(HOLE.x,HOLE.y,26,16,0,0,7); ctx.fill();
+  ctx.fillStyle = "#cfc4be"; ctx.beginPath(); ctx.ellipse(HOLE.x,HOLE.y+2,20,11,0,0,7); ctx.fill();
+  ants.forEach(ant);
+  for (const p of particles) { ctx.fillStyle = PAL[p.col]; ctx.fillRect(p.x,p.y,5,5); }
+  // slots
+  for (let i=0;i<SLOT_N;i++) { const r = slotRect(i);
+    ctx.fillStyle="#fff"; ctx.globalAlpha=.9; rr(r.x,r.y+30,r.w,r.h-30,12); ctx.fill(); ctx.globalAlpha=1;
+    if (slots[i]) jar(r.x+4,r.y+4,r.w-8,r.h-8,slots[i].col,slots[i].left,true); }
+  // jar grid
+  for (const j of jars) if (j.gx>=0) { const r = jarRect(j);
+    ctx.fillStyle="rgba(255,255,255,.9)"; rr(r.x-4,r.y-4,r.w+8,r.h+8,18); ctx.fill();
+    jar(r.x,r.y,r.w,r.h,j.col,j.total,false); }
+  // speed button
+  ctx.fillStyle = speed>1?"#3b8f2e":"#888"; rr(W-110,56,90,36,18); ctx.fill();
+  text("▶▶ "+speed+"x", W-65, 75, 18);
+  if (state !== "play") {
+    ctx.fillStyle="rgba(0,0,0,.55)"; ctx.fillRect(0,0,W,H);
+    text(state==="win"?"CLEAR! 🎉":"STUCK...", W/2, H/2-40, 64, "#ffd93b", "#222");
+    ctx.fillStyle="#3ddc2e"; rr(W/2-110,H/2+20,220,70,35); ctx.fill();
+    text(state==="win"?"もう一度":"リトライ", W/2, H/2+55, 30);
+  }
+}
+
+// ---------- input ----------
+function pos(e) {
+  const r = cv.getBoundingClientRect(), p = e.touches ? e.touches[0] : e;
+  return { x:(p.clientX-r.left)/r.width*W, y:(p.clientY-r.top)/r.height*H };
+}
+const hit = (p,r) => p.x>=r.x && p.x<=r.x+r.w && p.y>=r.y && p.y<=r.y+r.h;
+cv.addEventListener("pointerdown", e => {
+  const p = pos(e);
+  if (state !== "play") { if (p.y>H/2+10 && p.y<H/2+100) newGame(); return; }
+  if (hit(p,{x:W-110,y:56,w:90,h:36})) { speed = speed===1?2:1; return; }
+  for (const j of jars) if (j.gx>=0 && hit(p,jarRect(j))) { placeJar(j); break; }
+});
+
+// ---------- loop ----------
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(.05,(now-last)/1000); last = now;
+  const steps = speed; for (let i=0;i<steps;i++) update(dt);
+  draw(); requestAnimationFrame(frame);
+}
+newGame(); requestAnimationFrame(frame);
+</script>
+</body>
+</html>
